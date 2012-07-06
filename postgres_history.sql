@@ -1,6 +1,6 @@
 /* Created 6.7.2012 by Antti 'Annttu' Jaakkola
 
-I was to lazy to create history tables for all my tables so I created 
+I was to lazy to create history tables for all my tables so I created
 postgresql function to do them easily.
 
 Related:
@@ -49,27 +49,36 @@ WHERE
 CREATE TYPE event_type AS ENUM ('INSERT','UPDATE', 'DELETE');
 
 CREATE OR REPLACE FUNCTION create_history_table(tablename text)
-RETURNS VOID 
+RETURNS VOID
 AS $$
 DECLARE
     historytable text;
     oldcols text;
     cols text;
     col RECORD;
+    ttype text;
 BEGIN
 IF tablename IS NULL OR tablename = '' THEN
     RAISE EXCEPTION 'No table name given';
 ELSE
     oldcols := '';
     cols := '';
+    ttype := c.relname FROM pg_catalog.pg_class c
+            LEFT JOIN pg_catalog.pg_user u ON u.usesysid = c.relowner
+            LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r','')
+            AND n.nspname NOT IN ('pg_catalog', 'pg_toast')
+            AND pg_catalog.pg_table_is_visible(c.oid)
+            AND c.relname = tablename;
     historytable := tablename || '_history';
     EXECUTE 'DROP RULE IF EXISTS ' || tablename || '_delete_historize ON ' || tablename;
     EXECUTE 'DROP RULE IF EXISTS ' || tablename || '_update_historize ON ' || tablename;
+    EXECUTE 'DROP FUNCTION IF EXISTS ' || tablename || '_historize(text, text)';
     EXECUTE 'DROP TABLE IF EXISTS ' || historytable;
-    EXECUTE 'CREATE TABLE ' || historytable || ' (' || historytable || '_id serial PRIMARY KEY, 
-            historized timestamptz DEFAULT NOW(), operation event_type, 
+    EXECUTE 'CREATE TABLE ' || historytable || ' (' || historytable || '_id serial PRIMARY KEY,
+            historized timestamptz DEFAULT NOW(), operation event_type,
             old_xmin integer default 0, old_xmax integer default 0)';
-    FOR col IN 
+    FOR col IN
             SELECT
               a.attnum,
               a.attname AS field,
@@ -83,7 +92,7 @@ ELSE
               AND a.attnum > 0
               AND a.attrelid = c.oid
               AND a.atttypid = t.oid
-              ORDER BY a.attnum 
+              ORDER BY a.attnum
         LOOP
             EXECUTE 'ALTER TABLE ' || historytable || ' ADD COLUMN ' || col.field || ' ' || col.type;
             IF oldcols = '' THEN
@@ -91,17 +100,26 @@ ELSE
                 cols := col.field;
             ELSE
                 oldcols := oldcols || ', OLD.' || col.field;
-                cols := cols || ', ' || col.field;  
+                cols := cols || ', ' || col.field;
             END IF;
         END LOOP;
-        EXECUTE 'CREATE RULE ' || tablename || '_delete_historize AS ON DELETE TO ' || tablename || ' DO ALSO 
-            INSERT INTO ' || historytable || ' ( operation, old_xmax, old_xmin, ' || cols || ' ) SELECT 
-            ' || quote_literal('DELETE') || ', cast(txid_current() as text)::integer, 
-            cast(OLD.xmin as text)::integer, ' || oldcols;
-        EXECUTE 'CREATE RULE ' || tablename || '_update_historize AS ON UPDATE TO ' || tablename || ' DO ALSO 
-            INSERT INTO ' || historytable || ' ( operation, old_xmax, old_xmin, ' || cols || ' ) SELECT 
-            ' || quote_literal('UPDATE') || ', cast(txid_current() as text)::integer, 
-            cast(OLD.xmin as text)::integer, ' || oldcols;
+        IF ttype = 't' THEN
+            EXECUTE 'CREATE RULE ' || tablename || '_delete_historize AS ON DELETE TO ' || tablename || ' DO ALSO
+                INSERT INTO ' || historytable || ' ( operation, old_xmax, old_xmin, ' || cols || ' ) SELECT
+                ' || quote_literal('DELETE') || ', cast(txid_current() as text)::integer,
+                cast(OLD.xmin as text)::integer, ' || oldcols;
+            EXECUTE 'CREATE RULE ' || tablename || '_update_historize AS ON UPDATE TO ' || tablename || ' DO ALSO
+                INSERT INTO ' || historytable || ' ( operation, old_xmax, old_xmin, ' || cols || ' ) SELECT
+                ' || quote_literal('UPDATE') || ', cast(txid_current() as text)::integer,
+                cast(OLD.xmin as text)::integer, ' || oldcols;
+        ELSIF ttype = 'v' THEN
+            EXECUTE 'CREATE RULE ' || tablename || '_delete_historize AS ON DELETE TO ' || tablename || ' DO ALSO
+                INSERT INTO ' || historytable || ' ( operation, old_xmax, ' || cols || ' ) SELECT
+                ' || quote_literal('UPDATE') || ', cast(txid_current() as text)::integer, ' || oldcols;
+            EXECUTE 'CREATE RULE ' || tablename || '_update_historize AS ON UPDATE TO ' || tablename || ' DO ALSO
+                INSERT INTO ' || historytable || ' ( operation, old_xmax, ' || cols || ' ) SELECT
+                ' || quote_literal('UPDATE') || ', cast(txid_current() as text)::integer, ' || oldcols;
+        END IF;
     END IF;
-END;       
+END;
 $$ LANGUAGE plpgsql;
