@@ -6,7 +6,7 @@ postgresql function to do them easily.
 Related:
 http://bytes.com/topic/postgresql/answers/732169-syntax-view-structure-table-using-sql
 http://bytes.com/topic/postgresql/answers/172978-sql-command-list-tables
-
+*/
 /*
 -- List tables on schema
 
